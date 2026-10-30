@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
 
 env:
-  CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: never
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core:
@@ -56,6 +60,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: client
+          # Keep compiled dependencies even when our code fails to build.
+          cache-on-failure: true
       - name: Lint (also compiles the client)
         shell: bash
         run: |
