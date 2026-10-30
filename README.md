@@ -31,7 +31,7 @@ To play over a network:
 
 ```sh
 cargo run --release -p grandspace-server -- --addr 0.0.0.0:7878 --seed 42
-cargo run --release -p grandspace-client -- --connect ws://HOST:7878
+cargo run --release -p grandspace-client -- --connect ws://HOST:7878/ws
 ```
 
 Every faction nobody is playing is run by the AI. Hosted servers speak
