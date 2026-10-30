@@ -149,6 +149,8 @@ pub fn draw_map(mut gizmos: Gizmos, game: Res<Game>) {
     }
 }
 
+// Bevy systems take their inputs as parameters; eight is normal here.
+#[allow(clippy::too_many_arguments)]
 pub fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
