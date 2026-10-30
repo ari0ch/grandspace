@@ -1,0 +1,12 @@
+# Render Blueprint: one free web service running a shared galaxy.
+# Render builds the Dockerfile and redeploys when CI passes on main.
+services:
+  - type: web
+    name: grandspace
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: checksPass
+    healthCheckPath: /healthz
