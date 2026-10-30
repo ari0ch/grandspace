@@ -1,103 +1,104 @@
-//! The client's connection to a server, on its own thread.
+//! The client's connection to a server.
 //!
-//! Bevy systems never touch the socket: they push [`ClientMsg`]s into a
-//! channel and drain [`NetEvent`]s once per frame.
+//! Uses `ewebsock`, which speaks WebSockets both natively and in the browser,
+//! so desktop and web clients share this code. Bevy systems push
+//! [`ClientMsg`]s and drain [`NetEvent`]s once per frame; on the web the
+//! socket can't leave the main thread, so this is a non-send resource.
 
-use std::sync::mpsc;
-use std::sync::Mutex;
+use std::cell::RefCell;
 
-use bevy::prelude::Resource;
-use futures_util::{SinkExt, StreamExt};
+use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use grandspace_protocol::*;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use tokio_tungstenite::tungstenite::Message;
 
 pub enum NetEvent {
     Msg(Box<ServerMsg>),
     Disconnected(String),
 }
 
-#[derive(Resource)]
 pub struct Net {
-    tx: UnboundedSender<ClientMsg>,
-    rx: Mutex<mpsc::Receiver<NetEvent>>,
+    sender: Option<RefCell<WsSender>>,
+    receiver: Option<WsReceiver>,
+    faction: Option<u32>,
+    /// Messages queued before the socket opened.
+    pending: RefCell<Vec<ClientMsg>>,
+    open: RefCell<bool>,
+    failed: RefCell<Option<String>>,
 }
 
 impl Net {
     pub fn send(&self, msg: ClientMsg) {
-        // If the connection is gone the UI already shows it; nothing to do.
-        let _ = self.tx.send(msg);
+        if *self.open.borrow() {
+            if let Some(sender) = &self.sender {
+                sender.borrow_mut().send(WsMessage::Text(encode(&msg)));
+            }
+        } else {
+            self.pending.borrow_mut().push(msg);
+        }
     }
 
     /// Everything that arrived since the last call.
     pub fn drain(&self) -> Vec<NetEvent> {
-        let rx = self.rx.lock().expect("net receiver poisoned");
-        rx.try_iter().collect()
+        let mut out = Vec::new();
+        if let Some(reason) = self.failed.borrow_mut().take() {
+            out.push(NetEvent::Disconnected(reason));
+        }
+        let Some(receiver) = &self.receiver else {
+            return out;
+        };
+        while let Some(event) = receiver.try_recv() {
+            match event {
+                WsEvent::Opened => {
+                    *self.open.borrow_mut() = true;
+                    // Say hello first, then flush anything queued.
+                    self.send(ClientMsg::Hello {
+                        version: PROTOCOL_VERSION,
+                        faction: self.faction,
+                    });
+                    let queued: Vec<ClientMsg> = self.pending.borrow_mut().drain(..).collect();
+                    for msg in queued {
+                        self.send(msg);
+                    }
+                }
+                WsEvent::Message(WsMessage::Text(text)) => match decode_server(&text) {
+                    Ok(msg) => out.push(NetEvent::Msg(Box::new(msg))),
+                    Err(e) => out.push(NetEvent::Disconnected(format!(
+                        "the server sent something unreadable: {e}"
+                    ))),
+                },
+                WsEvent::Message(_) => {}
+                WsEvent::Error(e) => {
+                    *self.open.borrow_mut() = false;
+                    out.push(NetEvent::Disconnected(format!("connection error: {e}")));
+                }
+                WsEvent::Closed => {
+                    *self.open.borrow_mut() = false;
+                    out.push(NetEvent::Disconnected(
+                        "the server closed the connection".into(),
+                    ));
+                }
+            }
+        }
+        out
     }
 }
 
 pub fn connect(url: String, faction: Option<u32>) -> Net {
-    let (out_tx, mut out_rx) = unbounded_channel::<ClientMsg>();
-    let (in_tx, in_rx) = mpsc::channel::<NetEvent>();
-    std::thread::Builder::new()
-        .name("grandspace-net".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to start the network runtime");
-            rt.block_on(async move {
-                let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
-                    Ok((ws, _)) => ws,
-                    Err(e) => {
-                        let _ = in_tx.send(NetEvent::Disconnected(format!(
-                            "could not connect to {url}: {e}"
-                        )));
-                        return;
-                    }
-                };
-                let (mut sink, mut source) = ws.split();
-                let hello = ClientMsg::Hello {
-                    version: PROTOCOL_VERSION,
-                    faction,
-                };
-                if sink.send(Message::text(encode(&hello))).await.is_err() {
-                    let _ = in_tx.send(NetEvent::Disconnected("handshake failed".into()));
-                    return;
-                }
-                let reason = loop {
-                    tokio::select! {
-                        out = out_rx.recv() => match out {
-                            Some(msg) => {
-                                if sink.send(Message::text(encode(&msg))).await.is_err() {
-                                    break "lost connection to the server".to_string();
-                                }
-                            }
-                            None => break "client closed".to_string(),
-                        },
-                        inc = source.next() => match inc {
-                            Some(Ok(Message::Text(text))) => match decode_server(&text) {
-                                Ok(msg) => {
-                                    if in_tx.send(NetEvent::Msg(Box::new(msg))).is_err() {
-                                        break "client closed".to_string();
-                                    }
-                                }
-                                Err(e) => break format!("server sent something unreadable: {e}"),
-                            },
-                            Some(Ok(Message::Close(_))) | None => {
-                                break "the server closed the connection".to_string()
-                            }
-                            Some(Ok(_)) => {}
-                            Some(Err(e)) => break format!("connection error: {e}"),
-                        },
-                    }
-                };
-                let _ = in_tx.send(NetEvent::Disconnected(reason));
-            });
-        })
-        .expect("failed to start the network thread");
-    Net {
-        tx: out_tx,
-        rx: Mutex::new(in_rx),
+    match ewebsock::connect(url.clone(), ewebsock::Options::default()) {
+        Ok((sender, receiver)) => Net {
+            sender: Some(RefCell::new(sender)),
+            receiver: Some(receiver),
+            faction,
+            pending: RefCell::new(Vec::new()),
+            open: RefCell::new(false),
+            failed: RefCell::new(None),
+        },
+        Err(e) => Net {
+            sender: None,
+            receiver: None,
+            faction,
+            pending: RefCell::new(Vec::new()),
+            open: RefCell::new(false),
+            failed: RefCell::new(Some(format!("could not connect to {url}: {e}"))),
+        },
     }
 }

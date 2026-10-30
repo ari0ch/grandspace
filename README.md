@@ -34,7 +34,33 @@ cargo run --release -p grandspace-server -- --addr 0.0.0.0:7878 --seed 42
 cargo run --release -p grandspace-client -- --connect ws://HOST:7878
 ```
 
-Every faction nobody is playing is run by the AI.
+Every faction nobody is playing is run by the AI. Hosted servers speak
+`wss://`, so the desktop client can join one directly:
+`grandspace-client --connect wss://YOUR-APP.onrender.com/ws`.
+
+### In the browser
+
+The client also compiles to WebAssembly. The server hosts the page and the
+game on one port, so a single deployment gives you a playable link.
+
+```sh
+docker build -t grandspace .
+docker run -p 8080:8080 -e PORT=8080 grandspace   # then open http://localhost:8080
+```
+
+In the browser, add `?faction=N` to the address to ask for a particular
+faction. Hosted galaxies are shared: the clock runs for everyone and can't be
+paused.
+
+### Hosting on Render
+
+[`render.yaml`](render.yaml) describes a free Render web service built from
+the [`Dockerfile`](Dockerfile). In Render choose **New > Blueprint**, pick this
+repository and apply it. Render then redeploys whenever CI passes on `main`.
+
+Free services sleep after 15 minutes without visitors and take about a
+minute to wake. The galaxy is held in memory, so a sleep, restart or
+redeploy starts a fresh one; saving galaxies is future work.
 
 ### Watch the AI play for 200 years
 
@@ -69,7 +95,8 @@ All tuning numbers live in [`crates/sim/src/balance.rs`](crates/sim/src/balance.
 | `crates/headless` | Runs all-AI galaxies for centuries and prints their history |
 | `crates/protocol` | JSON messages between server and clients |
 | `crates/server` | Authoritative WebSocket server; also hosts single-player locally |
-| `crates/client` | Thin Bevy 0.19 client: draws what the server sends, sends orders back |
+| `crates/client` | Thin Bevy 0.19 client for desktop and the browser: draws what the server sends, sends orders back |
+| `web/` | The page that hosts the browser client |
 
 The simulation never depends on the engine, so the same code runs in a
 local single-player host, a dedicated server or the headless runner. See

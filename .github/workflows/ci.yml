@@ -71,6 +71,58 @@ jobs:
             exit 1
           fi
 
+  web:
+    name: Browser client (WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+          cache-on-failure: true
+      - name: Lint for the browser (also compiles it)
+        shell: bash
+        run: |
+          if ! cargo clippy -p grandspace-client --target wasm32-unknown-unknown -- -D warnings 2> clippy.log; then
+            cat clippy.log
+            python3 .github/scripts/annotate-errors.py clippy.log
+            exit 1
+          fi
+
+  docker:
+    name: Hosted image (Render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image Render will deploy
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: grandspace:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the running server
+        shell: bash
+        run: |
+          docker run -d --name gs -e PORT=8080 -p 8080:8080 grandspace:ci
+          for i in $(seq 1 30); do curl -fs localhost:8080/healthz && break; sleep 1; done
+          fail() { echo "::error title=smoke test::$1"; docker logs gs; exit 1; }
+          curl -fs localhost:8080/healthz | grep -q ok || fail "health check"
+          curl -fs localhost:8080/ | grep -q 'id="grandspace"' || fail "index page"
+          type=$(curl -fsI localhost:8080/pkg/grandspace_bg.wasm | grep -i '^content-type' || true)
+          echo "$type" | grep -qi 'application/wasm' || fail "wasm content type: $type"
+          enc=$(curl -fsI -H 'Accept-Encoding: gzip' localhost:8080/pkg/grandspace_bg.wasm | grep -i '^content-encoding' || true)
+          echo "$enc" | grep -qi gzip || fail "wasm not served gzipped: $enc"
+          size=$(curl -fs -H 'Accept-Encoding: gzip' localhost:8080/pkg/grandspace_bg.wasm | wc -c)
+          echo "::notice title=download size::gzipped wasm is $((size / 1024 / 1024)) MB"
+          docker logs gs
+
   binaries:
     name: Binaries (${{ matrix.os }})
     needs: [core, client]

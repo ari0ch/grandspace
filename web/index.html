@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grandspace</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #090a0f; color: #e0e2ea;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+    #game { position: fixed; inset: 0; }
+    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    #loading { position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px; pointer-events: none; }
+    #loading h1 { margin: 0; font-weight: 600; letter-spacing: 0.08em; }
+    #loading p { margin: 0; color: #8c93a6; font-size: 14px; }
+    #loading.error p { color: #f25a5a; }
+  </style>
+</head>
+<body>
+  <div id="game"><canvas id="grandspace"></canvas></div>
+  <div id="loading">
+    <h1>GRANDSPACE</h1>
+    <p id="status">Loading the galaxy… (first load downloads about 10 MB)</p>
+  </div>
+  <script type="module">
+    import init from "./pkg/grandspace.js";
+    const loading = document.getElementById("loading");
+    const status = document.getElementById("status");
+    // Bevy hands control to the browser's event loop by throwing this
+    // exception on purpose; anything else is a real failure.
+    const isControlFlow = (e) =>
+      String(e && e.message).startsWith("Using exceptions for control flow");
+    init()
+      .then(() => loading.remove())
+      .catch((e) => {
+        if (isControlFlow(e)) {
+          loading.remove();
+        } else {
+          console.error(e);
+          loading.classList.add("error");
+          status.textContent = "The game failed to start: " + e;
+        }
+      });
+    // Give the canvas keyboard focus so Space and WASD work straight away.
+    document.getElementById("grandspace").addEventListener("pointerdown", (ev) => ev.target.focus());
+  </script>
+</body>
+</html>

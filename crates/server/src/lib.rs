@@ -5,6 +5,9 @@
 //! orders and receives only that faction's view. Factions nobody is playing
 //! are run by the AI, so a galaxy is always alive.
 //!
+//! One HTTP port serves everything: the game socket at `/ws`, a health check
+//! at `/healthz` and, when a web directory is configured, the browser client.
+//!
 //! Single-player uses exactly the same path: [`spawn_local`] starts a server
 //! on a loopback port in a background thread and the client connects to it
 //! (decision 19: thin client from day one).
@@ -12,21 +15,31 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::response::Response;
+use axum::routing::get;
+use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use grandspace_protocol::*;
 use grandspace_sim::view::{FactionView, GalaxyInfo};
 use grandspace_sim::{FactionId, Sim, SimConfig};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
+use tower_http::services::{ServeDir, ServeFile};
 
 pub const MIN_SPEED: f32 = 0.25;
 pub const MAX_SPEED: f32 = 64.0;
 /// Recent events sent to a client when it joins.
 const BACKLOG_EVENTS: usize = 30;
+/// Path of the game WebSocket.
+pub const WS_PATH: &str = "/ws";
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -34,6 +47,11 @@ pub struct ServerConfig {
     /// Simulated days per real second.
     pub days_per_second: f32,
     pub start_paused: bool,
+    /// Ignore pause and speed requests from clients. Use this for shared
+    /// online galaxies so one player can't stop time for everyone.
+    pub locked_clock: bool,
+    /// Directory holding the built browser client, served at `/`.
+    pub web_dir: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -42,6 +60,8 @@ impl Default for ServerConfig {
             sim: SimConfig::default(),
             days_per_second: 2.0,
             start_paused: false,
+            locked_clock: false,
+            web_dir: None,
         }
     }
 }
@@ -61,16 +81,37 @@ enum Command {
     },
 }
 
-/// Accept connections forever, running the galaxy alongside.
+#[derive(Clone)]
+struct AppState {
+    commands: UnboundedSender<Command>,
+    next_client: Arc<AtomicU64>,
+}
+
+/// Serve the game (and the browser client, if configured) forever.
 pub async fn serve(listener: TcpListener, config: ServerConfig) -> io::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let web_dir = config.web_dir.clone();
     tokio::spawn(game_loop(config, cmd_rx));
-    let mut next_client = 0u64;
-    loop {
-        let (stream, _peer) = listener.accept().await?;
-        next_client += 1;
-        tokio::spawn(handle_connection(stream, next_client, cmd_tx.clone()));
+
+    let state = AppState {
+        commands: cmd_tx,
+        next_client: Arc::new(AtomicU64::new(1)),
+    };
+    let mut app = Router::new()
+        .route(WS_PATH, get(ws_handler))
+        .route("/healthz", get(|| async { "ok" }))
+        .with_state(state);
+    if let Some(dir) = web_dir {
+        let index = dir.join("index.html");
+        // Precompressed `.gz` files are used when the browser accepts them,
+        // which shrinks the WebAssembly download several times over.
+        app = app.fallback_service(
+            ServeDir::new(dir)
+                .precompressed_gzip()
+                .not_found_service(ServeFile::new(index)),
+        );
     }
+    axum::serve(listener, app).await
 }
 
 /// A server running on a loopback port in a background thread, for
@@ -82,7 +123,7 @@ pub struct LocalServer {
 
 impl LocalServer {
     pub fn url(&self) -> String {
-        format!("ws://{}", self.addr)
+        format!("ws://{}{}", self.addr, WS_PATH)
     }
 }
 
@@ -111,17 +152,18 @@ pub fn spawn_local(config: ServerConfig) -> io::Result<LocalServer> {
     })
 }
 
-async fn handle_connection(stream: TcpStream, id: u64, cmd_tx: UnboundedSender<Command>) {
-    let ws = match tokio_tungstenite::accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(_) => return,
-    };
-    let (mut sink, mut source) = ws.split();
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    let id = state.next_client.fetch_add(1, Ordering::Relaxed);
+    ws.on_upgrade(move |socket| handle_socket(socket, id, state.commands))
+}
+
+async fn handle_socket(socket: WebSocket, id: u64, cmd_tx: UnboundedSender<Command>) {
+    let (mut sink, mut source) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if sink.send(Message::text(encode(&msg))).await.is_err() {
+            if sink.send(Message::Text(encode(&msg).into())).await.is_err() {
                 break;
             }
         }
@@ -135,7 +177,7 @@ async fn handle_connection(stream: TcpStream, id: u64, cmd_tx: UnboundedSender<C
             Message::Close(_) => break,
             _ => continue,
         };
-        match decode_client(&text) {
+        match decode_client(text.as_str()) {
             Ok(ClientMsg::Hello { version, faction }) if !joined => {
                 if version != PROTOCOL_VERSION {
                     let _ = tx.send(ServerMsg::Error {
@@ -186,6 +228,7 @@ struct Game {
     clients: BTreeMap<u64, Client>,
     speed: f32,
     paused: bool,
+    locked: bool,
 }
 
 fn period(speed: f32) -> Duration {
@@ -201,6 +244,7 @@ async fn game_loop(config: ServerConfig, mut rx: UnboundedReceiver<Command>) {
         clients: BTreeMap::new(),
         speed: config.days_per_second.clamp(MIN_SPEED, MAX_SPEED),
         paused: config.start_paused,
+        locked: config.locked_clock,
     };
     let mut next_tick = Instant::now() + period(game.speed);
     loop {
@@ -270,6 +314,7 @@ impl Game {
         let _ = tx.send(ServerMsg::Clock {
             days_per_second: self.speed,
             paused: self.paused,
+            locked: self.locked,
         });
         let recent: Vec<WireEvent> = {
             let visible: Vec<_> = self
@@ -330,6 +375,14 @@ impl Game {
                     ServerMsg::State {
                         view,
                         events: Vec::new(),
+                    },
+                );
+            }
+            ClientMsg::SetSpeed { .. } | ClientMsg::Pause | ClientMsg::Resume if self.locked => {
+                self.send_to(
+                    client,
+                    ServerMsg::Error {
+                        message: "this galaxy's clock is fixed by the server".into(),
                     },
                 );
             }
@@ -395,6 +448,7 @@ impl Game {
         let msg = ServerMsg::Clock {
             days_per_second: self.speed,
             paused: self.paused,
+            locked: self.locked,
         };
         let ids: Vec<u64> = self.clients.keys().copied().collect();
         for id in ids {

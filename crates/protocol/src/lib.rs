@@ -11,7 +11,7 @@
 use grandspace_sim as sim;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // --- Client to server -----------------------------------------------------
 
@@ -70,6 +70,10 @@ pub enum ServerMsg {
     Clock {
         days_per_second: f32,
         paused: bool,
+        /// True when the server fixes the clock (shared online galaxies):
+        /// clients can't pause or change speed.
+        #[serde(default)]
+        locked: bool,
     },
     Error {
         message: String,

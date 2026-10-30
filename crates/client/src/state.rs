@@ -21,6 +21,8 @@ pub struct Game {
     pub selected_planet: Option<u32>,
     pub speed: f32,
     pub paused: bool,
+    /// The server fixes the clock (shared online galaxy).
+    pub locked: bool,
     pub notice: Option<String>,
     pub disconnected: Option<String>,
     /// Something changed that the UI should show.
@@ -68,7 +70,7 @@ impl Game {
 }
 
 /// Apply everything the server sent since last frame.
-pub fn receive(net: Res<Net>, mut game: ResMut<Game>) {
+pub fn receive(net: NonSend<Net>, mut game: ResMut<Game>) {
     for event in net.drain() {
         match event {
             NetEvent::Msg(msg) => match *msg {
@@ -103,9 +105,11 @@ pub fn receive(net: Res<Net>, mut game: ResMut<Game>) {
                 ServerMsg::Clock {
                     days_per_second,
                     paused,
+                    locked,
                 } => {
                     game.speed = days_per_second;
                     game.paused = paused;
+                    game.locked = locked;
                 }
                 ServerMsg::Error { message } => {
                     game.notice = Some(format!("Server: {message}"));
