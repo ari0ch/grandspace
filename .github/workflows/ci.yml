@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: Simulation, protocol and server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: >
+          cargo clippy --all-targets
+          -p grandspace-sim -p grandspace-headless -p grandspace-protocol -p grandspace-server
+          -- -D warnings
+      - name: Test
+        run: >
+          cargo test
+          -p grandspace-sim -p grandspace-headless -p grandspace-protocol -p grandspace-server
+      - name: 200-year AI sandbox
+        run: cargo run --release -p grandspace-headless -- --seed 42 --years 200 --report-every 100 --no-chronicle
+
+  client:
+    name: Bevy client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries for windowing and input
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libwayland-dev libxkbcommon-dev libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+      - name: Lint (also compiles the client)
+        run: cargo clippy -p grandspace-client --all-targets -- -D warnings
+
+  binaries:
+    name: Binaries (${{ matrix.os }})
+    needs: [core, client]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries for windowing and input
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libwayland-dev libxkbcommon-dev libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Build release binaries
+        run: cargo build --release -p grandspace-client -p grandspace-server -p grandspace-headless
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir dist
+          for b in grandspace-client grandspace-server grandspace-headless; do
+            cp "target/release/$b${{ runner.os == 'Windows' && '.exe' || '' }}" dist/
+          done
+          cp README.md LICENSE dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grandspace-${{ runner.os }}
+          path: dist/

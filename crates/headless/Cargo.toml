@@ -1,0 +1,14 @@
+[package]
+name = "grandspace-headless"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Run an all-AI Grandspace galaxy for centuries and print its history"
+rust-version = "1.82"
+
+[[bin]]
+name = "grandspace-headless"
+path = "src/main.rs"
+
+[dependencies]
+grandspace-sim = { path = "../sim", version = "0.1.0" }

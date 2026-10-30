@@ -1,0 +1,12 @@
+[package]
+name = "grandspace-sim"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Deterministic, headless galaxy simulation for Grandspace"
+rust-version = "1.82"
+
+# Deliberately dependency-free: the simulation is pure std so it is easy to
+# test, fully deterministic, and can be embedded in a server, a local
+# single-player host or a headless runner without pulling in an engine.
+[dependencies]

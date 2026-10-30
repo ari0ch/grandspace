@@ -1,0 +1,21 @@
+[package]
+name = "grandspace-client"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Thin Bevy client for Grandspace: draws what the server says and sends orders"
+
+[[bin]]
+name = "grandspace-client"
+path = "src/main.rs"
+
+[dependencies]
+grandspace-sim = { path = "../sim", version = "0.1.0" }
+grandspace-protocol = { path = "../protocol", version = "0.1.0" }
+# Only used to host a local server for single-player.
+grandspace-server = { path = "../server", version = "0.1.0" }
+# Clean and light (decision 20): 2D and UI only, no 3D renderer or audio.
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "net", "time"] }
+tokio-tungstenite = "0.26"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

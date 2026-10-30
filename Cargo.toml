@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sim",
+    "crates/headless",
+    "crates/protocol",
+    "crates/server",
+    "crates/client",
+]
+
+# Bevy is slow in plain debug builds; optimise dependencies but keep our own
+# code quick to compile.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
