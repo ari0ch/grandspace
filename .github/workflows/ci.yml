@@ -24,10 +24,15 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Lint
-        run: >
-          cargo clippy --all-targets
-          -p grandspace-sim -p grandspace-headless -p grandspace-protocol -p grandspace-server
-          -- -D warnings
+        shell: bash
+        run: |
+          if ! cargo clippy --all-targets \
+              -p grandspace-sim -p grandspace-headless -p grandspace-protocol -p grandspace-server \
+              -- -D warnings 2> clippy.log; then
+            cat clippy.log
+            python3 .github/scripts/annotate-errors.py clippy.log
+            exit 1
+          fi
       - name: Test
         run: >
           cargo test
@@ -52,7 +57,13 @@ jobs:
         with:
           key: client
       - name: Lint (also compiles the client)
-        run: cargo clippy -p grandspace-client --all-targets -- -D warnings
+        shell: bash
+        run: |
+          if ! cargo clippy -p grandspace-client --all-targets -- -D warnings 2> clippy.log; then
+            cat clippy.log
+            python3 .github/scripts/annotate-errors.py clippy.log
+            exit 1
+          fi
 
   binaries:
     name: Binaries (${{ matrix.os }})
