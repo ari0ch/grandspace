@@ -12,10 +12,18 @@ path = "src/main.rs"
 [dependencies]
 grandspace-sim = { path = "../sim", version = "0.1.0" }
 grandspace-protocol = { path = "../protocol", version = "0.1.0" }
-# Only used to host a local server for single-player.
-grandspace-server = { path = "../server", version = "0.1.0" }
 # Clean and light (decision 20): 2D and UI only, no 3D renderer or audio.
 bevy = { version = "0.19", default-features = false, features = ["2d", "ui"] }
-tokio = { version = "1", features = ["rt", "macros", "sync", "net", "time"] }
-tokio-tungstenite = "0.26"
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# WebSockets that work both natively and in the browser. `tls` lets the
+# desktop client join hosted (wss://) galaxies.
+ewebsock = { version = "0.8", features = ["tls"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Hosts a local server for single-player on desktop.
+grandspace-server = { path = "../server", version = "0.1.0" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+# Randomness comes from the browser on the web (see .cargo/config.toml).
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

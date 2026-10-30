@@ -276,6 +276,14 @@ fn build_top_bar(p: &mut ChildSpawnerCommands, game: &Game) {
         flex_grow: 1.0,
         ..default()
     });
+    if game.locked {
+        p.spawn(text(
+            format!("Shared galaxy · {:.0} days/s", game.speed),
+            12.5,
+            palette::TEXT_DIM,
+        ));
+        return;
+    }
     p.spawn(row()).with_children(|r| {
         button(
             r,
@@ -525,7 +533,7 @@ fn build_sidebar(p: &mut ChildSpawnerCommands, game: &Game) {
 
 pub fn handle_buttons(
     query: Query<(&Interaction, &UiButton), Changed<Interaction>>,
-    net: Res<Net>,
+    net: NonSend<Net>,
     mut game: ResMut<Game>,
 ) {
     for (interaction, button) in &query {
@@ -570,8 +578,8 @@ pub fn button_hover(
 }
 
 /// Space toggles pause, as in every grand strategy game.
-pub fn keyboard(keys: Res<ButtonInput<KeyCode>>, net: Res<Net>, game: Res<Game>) {
-    if keys.just_pressed(KeyCode::Space) {
+pub fn keyboard(keys: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, game: Res<Game>) {
+    if keys.just_pressed(KeyCode::Space) && !game.locked {
         net.send(if game.paused {
             ClientMsg::Resume
         } else {
